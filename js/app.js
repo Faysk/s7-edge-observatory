@@ -50,7 +50,8 @@ const HISTORY_TTL_MS=60000,HISTORY_CACHE_LIMIT=28;
 const historyFlights=new Map();
 const requiredHistory={overview:['cpu','memory','rx','tx'],performance:['cpu','memory'],network:['rx','tx'],storage:['storage'],battery:['battery','temp']};
 const currentHistoryKeys=()=>new Set((requiredHistory[state.page]||[]).map(metric=>metric+':'+state.range));
-let renderQueued=false,historyGeneration=0;
+let renderQueued=false;
+let lastRenderedRange=state.range;
 function scheduleRender(){
  if(renderQueued)return;
  renderQueued=true;
@@ -104,9 +105,10 @@ function chart(metric,opts={}){
   const vals=state.mode!=='demo'?(state.history[`${metric}:${state.range}`]||null):Demo.series(metric,state.range);
   const secondary=opts.secondary;
   const vals2=secondary?(state.mode!=='demo'?(state.history[`${secondary}:${state.range}`]||null):Demo.series(secondary,state.range)):null;
-  const phase=state.mode==='demo'?'success':historyState(metric);
+  const phases=[metric,...(secondary?[secondary]:[])].map(name=>state.mode==='demo'?'success':historyState(name));
+  const phase=phases.includes('error')?'error':phases.includes('stale')?'stale':phases.includes('loading')?'loading':phases[0];
   const old=phase==='stale',pending=phase==='loading',failed=phase==='error';
-  const retry=`<button type="button" class="link-button history-retry" data-retry-history="${esc(metric)}">Tentar novamente</button>`;
+  const retry=`<button type="button" class="link-button history-retry" data-retry-history="${esc([metric,...(secondary?[secondary]:[])].join(','))}">Tentar novamente</button>`;
   const message=failed?'Não foi possível carregar este histórico.':old?'Falha ao atualizar — exibindo apenas a última série válida deste período.':pending?'Carregando histórico deste período…':phase==='empty'?'Não há amostras registradas neste período.':'Ainda não há amostras suficientes neste período.';
   const statusLabel=(pending||failed||old)?`<div class="history-state history-${phase}" role="status">${pending?'<span class="history-spinner" aria-hidden="true"></span>':''}<span>${message}</span>${failed||old?retry:''}</div>`:'';
   if(!vals||vals.length<2||!vals.some(p=>p.value!=null)){
@@ -199,6 +201,7 @@ function patchNode(oldNode,newNode){
    if(attr.name==='open'&&oldNode.tagName==='DETAILS')continue;
    if(oldNode.getAttribute(attr.name)!==attr.value)oldNode.setAttribute(attr.name,attr.value);
  }
+ if(oldNode.matches?.('.source-body')&&oldNode.closest('details')?.open&&!newNode.innerHTML)return;
  if(oldNode.matches?.('input,textarea,select')&&oldNode===document.activeElement){
    // Never overwrite live keyboard input when polling.
    return;
@@ -240,11 +243,11 @@ function render(){
  const main=$('#main-content'),entering=state.lastPage!==state.page;
  const oldSelections=new Map();
  for(const entry of chartRegistry.values())if(entry.selectedIndex!=null)
-   oldSelections.set((state.lastPage||state.page)+':'+state.range+':'+entry.metric+':'+(entry.secondaryName||''),entry.selectedIndex);
+   oldSelections.set((state.lastPage||state.page)+':'+lastRenderedRange+':'+entry.metric+':'+(entry.secondaryName||''),entry.selectedIndex);
  previousChartSelection=oldSelections;
  const focused=document.activeElement,selection=focused?.id==='metric-search'?[focused.selectionStart,focused.selectionEnd]:null;
  const opened=Array.from(main.querySelectorAll?.('details[open][data-source],details.source-section[open]')||[]).map(el=>el.dataset.source||'section');
- state.lastPage=state.page;document.body.dataset.motion=state.motion?'on':'off';
+ state.lastPage=state.page;lastRenderedRange=state.range;document.body.dataset.motion=state.motion?'on':'off';
  main.classList?.remove('page-enter');chartRegistry.clear();chartID=0;
  if(entering)setNav();
  const connected=state.mode==='real',demo=state.mode==='demo';
@@ -254,6 +257,15 @@ function render(){
  if(entering&&state.motion&&!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches)main.classList?.add('page-enter');
  if(entering)for(const el of Array.from(main.querySelectorAll?.('details[data-source],details.source-section')||[]))if(opened.includes(el.dataset.source||'section'))el.open=true;
  if(!entering&&selection&&focused?.isConnected&&focused.setSelectionRange)focused.setSelectionRange(...selection);
+ // Expanded sensor bodies were generated lazily; keep the disclosure open and
+ // update only its own reading instead of deleting it during DOM reconciliation.
+ for(const details of Array.from(main.querySelectorAll?.('details[data-source][open]')||[])){
+   const body=details.querySelector('.source-body');
+   if(body&&!body.contains(document.activeElement)){
+     const fresh=sourceDetail(details.dataset.source);
+     if(body.innerHTML!==fresh)body.innerHTML=fresh;
+   }
+ }
  updateChrome();
  for(const [id,entry] of chartRegistry)if(entry.selectedIndex!=null){
    const holder=main.querySelector?.('[data-chart="'+id+'"]');
@@ -262,7 +274,7 @@ function render(){
 }
 function route(key){
  if(!pageFunctions[key])return;
- if(state.page!==key){historyGeneration++;state.page=key;}
+ if(state.page!==key){state.page=key;}
  state.search='';state.filter='all';state.explorerLimit=48;
  $('#sidebar').classList.remove('open');$('#sidebar-scrim').classList.remove('visible');
  cancelUnusedHistory();
@@ -353,8 +365,8 @@ function copyString(str){navigator.clipboard?.writeText(str).then(()=>toast('Com
 $('#main-content').addEventListener('click',async e=>{
  const t=e.target.closest('button');if(!t)return;
  if(t.dataset.nav)route(t.dataset.nav);
- else if(t.dataset.range){if(state.range===t.dataset.range)return;historyGeneration++;state.range=t.dataset.range;saveSetting('range',state.range);cancelUnusedHistory();const pending=loadHistory();render();await pending}
- else if('retryHistory' in t.dataset){const metric=t.dataset.retryHistory;if(!(requiredHistory[state.page]||[]).includes(metric))return;const pending=requestHistory(metric,state.range,{force:true});render();await pending}
+ else if(t.dataset.range){if(state.range===t.dataset.range)return;state.range=t.dataset.range;saveSetting('range',state.range);cancelUnusedHistory();const pending=loadHistory();render();await pending}
+ else if('retryHistory' in t.dataset){const metrics=t.dataset.retryHistory.split(',').filter(metric=>(requiredHistory[state.page]||[]).includes(metric));if(!metrics.length)return;const pending=Promise.all(metrics.map(metric=>requestHistory(metric,state.range,{force:true})));render();await pending}
   else if('refresh' in t.dataset)await checkAPI(true);
  else if(t.dataset.export)exportData(t.dataset.export);
  else if('motion' in t.dataset){state.motion=!state.motion;saveSetting('motion',state.motion?'on':'off');render()}
