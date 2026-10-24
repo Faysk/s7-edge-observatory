@@ -13,3 +13,4 @@ jobs:
       - run: node tests/test_ui.cjs
       - run: node tests/test_history.cjs
       - run: node --check js/app.js
+      - run: node tests/browser_smoke.cjs
