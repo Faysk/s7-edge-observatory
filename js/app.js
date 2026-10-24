@@ -68,9 +68,12 @@ function cacheHistory(key,values){
  const keys=Object.keys(state.historyTimes);
  if(keys.length>HISTORY_CACHE_LIMIT){
    keys.sort((a,b)=>state.historyTimes[a]-state.historyTimes[b]);
-   for(const evicted of keys.slice(0,keys.length-HISTORY_CACHE_LIMIT)){
-     if(historyFlights.has(evicted))continue;
+   let count=keys.length;
+   for(const evicted of keys){
+     if(count<=HISTORY_CACHE_LIMIT)break;
+     if(historyFlights.has(evicted)&&evicted!==key)continue;
      delete state.history[evicted];delete state.historyTimes[evicted];delete state.historyStatus[evicted];
+     count--;
    }
  }
 }
@@ -239,8 +242,10 @@ function updateChrome(){
    const strong=bar.querySelector('strong'),timestamp=bar.querySelector('span:nth-of-type(2)');
    if(strong)strong.textContent=connected?'Conectado ao S7':label;
    if(timestamp)timestamp.textContent=state.snapshot.timestamp?'Amostra de '+prettyTime(state.snapshot.timestamp):'Conectando ao servidor…';
-   const refresh=bar.querySelector('[data-refresh]');
-   if(refresh){refresh.disabled=state.fetching;refresh.setAttribute('aria-busy',String(state.fetching));}
+ }
+ for(const refresh of Array.from($('#main-content').querySelectorAll?.('[data-refresh]')||[])){
+   refresh.disabled=state.fetching;
+   refresh.setAttribute('aria-busy',String(state.fetching));
  }
 }
 function render(){
