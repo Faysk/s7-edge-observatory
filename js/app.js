@@ -57,7 +57,7 @@ function scheduleRender(){
  renderQueued=true;
  // rAF batches writes in visible tabs; timeout fallback handles throttled/headless frames.
  let flushed=false;
- const flush=()=>{if(flushed)return;flushed=true;renderQueued=false;if(!document.hidden)render()};
+ const flush=()=>{if(flushed)return;flushed=true;renderQueued=false;render()};
  if(typeof requestAnimationFrame==='function')requestAnimationFrame(flush);
  else setTimeout(flush,0);
  setTimeout(flush,80);
