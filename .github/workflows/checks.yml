@@ -11,4 +11,5 @@ jobs:
         with:
           node-version: '22'
       - run: node tests/test_ui.cjs
+      - run: node tests/test_history.cjs
       - run: node --check js/app.js
