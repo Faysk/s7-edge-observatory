@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>S7 synthetic Chromium smoke</title></head><body>
+<div id="smoke" data-status="pending">Executando…</div>
+<iframe src="../index.html" id="frame" style="width:1190px;height:800px"></iframe>
+<script>
+(async()=>{
+ const out=document.getElementById('smoke'),frame=document.getElementById('frame'),checks=[];
+ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+ const until=async(fn,label,timeout=12000)=>{
+   const started=Date.now();while(Date.now()-started<timeout){let value=fn();if(value)return value;await sleep(40);}
+   throw Error('Timeout: '+label);
+ };
+ const assert=(yes,msg)=>{if(!yes)throw Error(msg)};
+ try{
+   const d=await until(()=>frame.contentDocument?.querySelector('#main-content .freshness-bar'), 'initial shell');
+   const w=frame.contentWindow;
+   await until(()=>d.querySelector('.freshness-bar strong')?.textContent.includes('Conectado'),'synthetic snapshot');
+   await until(()=>d.querySelector('[data-history-region="cpu"] .chart-holder'),'CPU history loaded');
+   checks.push('Snapshot + charts');
+   const main=d.getElementById('main-content'),holder=d.querySelector('[data-history-region="cpu"] .chart-holder'),svg=holder.querySelector('svg');
+   const oldNav=d.querySelector('#main-nav [data-nav="overview"]');
+   // No navigation/render churn from an identical response.
+   d.querySelector('.freshness-bar [data-refresh]').click();
+   await until(()=>!d.querySelector('.freshness-bar [data-refresh]')?.disabled,'unchanged refresh');
+   assert(d.querySelector('[data-history-region="cpu"] .chart-holder')===holder,'identical sample rebuilt chart node');
+   assert(d.querySelector('#main-nav [data-nav="overview"]')===oldNav,'identical sample rebuilt navigation');
+   checks.push('Stable snapshot does not recreate nodes');
+   await fetch('advance-fixture');
+   d.querySelector('.freshness-bar [data-refresh]').click();
+   await until(()=>main.textContent.includes('81,0')||main.textContent.includes('81%'),'changed CPU snapshot');
+   assert(d.querySelector('[data-history-region="cpu"] .chart-holder')===holder,'changed snapshot replaced chart instead of patching it');
+   assert(holder.querySelector('svg')===svg,'changed snapshot replaced SVG');
+   checks.push('Changed snapshot reconciles SVG');
+   const range=d.querySelector('[data-range="7d"]');
+   range.click();
+   assert(d.querySelector('[data-range="7d"]').getAttribute('aria-pressed')==='true','range selection not immediate');
+   assert(d.querySelector('[data-range="24h"]').getAttribute('aria-pressed')==='false','old range remains selected');
+   await until(()=>d.querySelector('[data-history-region="cpu"] .history-error'),'initial 7d synthetic 500');
+   assert(d.querySelector('[data-history-region="cpu"] [data-retry-history]'),'missing retry');
+   checks.push('Range is immediate; HTTP500 visible');
+   d.querySelector('[data-history-region="cpu"] [data-retry-history]').click();
+   await until(()=>!d.querySelector('[data-history-region="cpu"] .history-error')&&d.querySelector('[data-history-region="cpu"] .chart-holder'),'retry success');
+   checks.push('Per-range retry');
+   d.querySelector('#main-nav [data-nav="activity"]').click();
+   await until(()=>d.getElementById('explorer-results')&&d.querySelectorAll('#explorer-results .source-card').length===48,'explorer 48');
+   const card=d.querySelector('#explorer-results .source-card');
+   const first=card.querySelector('summary');
+   first.click();
+   assert(card.open,'synthetic sensor did not expand');
+   const input=d.getElementById('metric-search');
+   d.querySelector('.freshness-bar [data-refresh]').click();
+   await until(()=>!d.querySelector('.freshness-bar [data-refresh]')?.disabled,'activity refresh');
+   assert(d.querySelector('#explorer-results .source-card')===card,'polling replaced sensor card');
+   assert(card.open,'polling collapsed expanded sensor');
+   assert(d.getElementById('metric-search')===input,'polling replaced search input');
+   checks.push('Sensor selection, expansion and input retained');
+   d.querySelector('[data-explorer-more]').click();
+   assert(d.querySelectorAll('#explorer-results .source-card').length===96,'Load more did not append 48');
+   checks.push('48-item explorer pages');
+   out.dataset.status='pass';out.textContent=checks.join(' | ');
+ }catch(err){out.dataset.status='fail';out.textContent=String(err.message||err);console.error(err);}
+})();
+</script></body></html>
