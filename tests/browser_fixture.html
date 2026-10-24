@@ -12,7 +12,8 @@
  };
  const assert=(yes,msg)=>{if(!yes)throw Error(msg)};
  try{
-   const d=await until(()=>frame.contentDocument?.querySelector('#main-content .freshness-bar'), 'initial shell');
+   await until(()=>frame.contentDocument?.querySelector('#main-content .freshness-bar'), 'initial shell');
+   const d=frame.contentDocument;
    const w=frame.contentWindow;
    await until(()=>d.querySelector('.freshness-bar strong')?.textContent.includes('Conectado'),'synthetic snapshot');
    await until(()=>d.querySelector('[data-history-region="cpu"] .chart-holder'),'CPU history loaded');
