@@ -64,3 +64,5 @@ svg{flex-shrink:0}::selection{background:rgba(var(--accent-rgb),.25)}.app{min-he
 .history-empty{min-height:180px;display:grid;place-items:center;text-align:center}
 @keyframes history-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.history-spinner{animation:none}}
+
+.explorer-more{display:flex;margin:22px auto;min-height:44px;justify-content:center}
