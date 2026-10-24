@@ -44,8 +44,44 @@ function ic(n){return `<svg class="icon" width="18" height="18" viewBox="0 0 24 
 function readSetting(k,fallback){try{return localStorage.getItem('s7_'+k)??fallback}catch{return fallback}}
 function saveSetting(k,v){try{localStorage.setItem('s7_'+k,String(v))}catch{}}
 function emptySnapshot(){return {timestamp:null,device:{name:'Servidor S7',os:null,uptimeSec:null},cpu:{usagePercent:null,frequencyMHz:null,temperatureC:null,coresPercent:[]},memory:{totalMB:null,usedMB:null,cachedMB:null,swapMB:null},battery:{levelPercent:null,status:null,temperatureC:null,voltageMV:null,currentMA:null,health:null,plugged:null},network:{interface:null,ip:null,ssid:null,signalDbm:null,linkMbps:null,rxMbps:null,txMbps:null,latencyMs:null,connected:null},storage:[],services:[],events:[],diagnostics:{},availability:{}};}
-const state={page:'overview',range:readSetting('range','24h'),theme:readSetting('theme','dark'),pref:'auto',motion:readSetting('motion','on')!=='off',historyTimes:{},lastPage:null,mode:'offline',snapshot:emptySnapshot(),paused:false,tick:0,filter:'all',search:'',history:{},fetching:false};
-let chartID=0;let chartRegistry=new Map();
+const state={page:'overview',range:readSetting('range','24h'),theme:readSetting('theme','dark'),pref:'auto',motion:readSetting('motion','on')!=='off',historyTimes:{},lastPage:null,mode:'offline',snapshot:emptySnapshot(),paused:false,tick:0,filter:'all',search:'',history:{},historyStatus:{},fetching:false};
+let chartID=0;let chartRegistry=new Map(),previousChartSelection=new Map();
+const HISTORY_TTL_MS=60000,HISTORY_CACHE_LIMIT=28;
+const historyFlights=new Map();
+const requiredHistory={overview:['cpu','memory','rx','tx'],performance:['cpu','memory'],network:['rx','tx'],storage:['storage'],battery:['battery','temp']};
+const currentHistoryKeys=()=>new Set((requiredHistory[state.page]||[]).map(metric=>metric+':'+state.range));
+let renderQueued=false,historyGeneration=0;
+function scheduleRender(){
+ if(renderQueued)return;
+ renderQueued=true;
+ const raf=typeof requestAnimationFrame==='function'?requestAnimationFrame:fn=>setTimeout(fn,0);
+ raf(()=>{renderQueued=false;if(!document.hidden)render()});
+}
+function historyAnnouncement(message){const el=$('#history-announcement');if(el)el.textContent=message;}
+function cacheHistory(key,values){
+ state.history[key]=values;state.historyTimes[key]=Date.now();
+ const keys=Object.keys(state.historyTimes);
+ if(keys.length>HISTORY_CACHE_LIMIT){
+   keys.sort((a,b)=>state.historyTimes[a]-state.historyTimes[b]);
+   for(const evicted of keys.slice(0,keys.length-HISTORY_CACHE_LIMIT)){
+     if(historyFlights.has(evicted))continue;
+     delete state.history[evicted];delete state.historyTimes[evicted];delete state.historyStatus[evicted];
+   }
+ }
+}
+function cancelUnusedHistory(){
+ const needed=currentHistoryKeys();
+ for(const [key,entry] of historyFlights){
+   if(!needed.has(key)){entry.controller.abort();historyFlights.delete(key);
+     if(state.historyStatus[key]?.phase==='loading')delete state.historyStatus[key];}
+ }
+}
+function historyState(metric,range=state.range){
+ const key=metric+':'+range,meta=state.historyStatus[key];
+ if(meta)return meta.phase;
+ if(Array.isArray(state.history[key]))return state.history[key].length?'success':'empty';
+ return 'idle';
+}
 function toast(text){const el=document.createElement('div');el.className='toast';el.textContent=text;$('#toast-region').appendChild(el);setTimeout(()=>el.remove(),3900);}
 function setTheme(t){state.theme=t;saveSetting('theme',t);document.body.dataset.theme=t;$('#theme-toggle').innerHTML=ic(t==='dark'?'sun':'moon')}
 function setNav(){ $('#main-nav').innerHTML=nav.map(([key,label,icon],idx)=>`<button type="button" class="nav-item ${state.page===key?'active':''}" data-nav="${key}" aria-current="${state.page===key?'page':'false'}">${ic(icon)}<span>${label}</span>${idx===0?'<span class="nav-trailing">⌘1</span>':''}</button>`).join('')}
@@ -68,14 +104,20 @@ function chart(metric,opts={}){
   const vals=state.mode!=='demo'?(state.history[`${metric}:${state.range}`]||null):Demo.series(metric,state.range);
   const secondary=opts.secondary;
   const vals2=secondary?(state.mode!=='demo'?(state.history[`${secondary}:${state.range}`]||null):Demo.series(secondary,state.range)):null;
-  if(!vals&&state.fetching)return '<div class="history-loading"><div></div><span>Carregando histórico…</span></div>';
-  if(!vals||vals.length<2||!vals.some(p=>p.value!=null))return `<div class="empty" style="min-height:180px;display:grid;place-items:center;text-align:center">O gráfico aparece assim que houver amostras suficientes neste período.</div>`;
+  const phase=state.mode==='demo'?'success':historyState(metric);
+  const old=phase==='stale',pending=phase==='loading',failed=phase==='error';
+  const retry=`<button type="button" class="link-button history-retry" data-retry-history="${esc(metric)}">Tentar novamente</button>`;
+  const message=failed?'Não foi possível carregar este histórico.':old?'Falha ao atualizar — exibindo apenas a última série válida deste período.':pending?'Carregando histórico deste período…':phase==='empty'?'Não há amostras registradas neste período.':'Ainda não há amostras suficientes neste período.';
+  const statusLabel=(pending||failed||old)?`<div class="history-state history-${phase}" role="status">${pending?'<span class="history-spinner" aria-hidden="true"></span>':''}<span>${message}</span>${failed||old?retry:''}</div>`:'';
+  if(!vals||vals.length<2||!vals.some(p=>p.value!=null)){
+    return `<div class="history-region" data-history-region="${esc(metric)}" aria-busy="${pending}">${statusLabel||`<div class="empty history-empty" role="status">${message}</div>`}</div>`;
+  }
   if(['rx','tx','temp'].includes(metric)){const all=[...vals,...(vals2||[])].map(p=>p.value).filter(v=>v!=null&&Number.isFinite(v));if(all.length){max=Math.max(metric==='temp'?1:.01,...all)*1.15;if(metric==='temp')min=Math.max(0,Math.min(...all)-3);}}
-  chartRegistry.set(id,{values:vals,secondaryValues:vals2,secondaryName:secondary,min,max,unit:cfg.unit,metric,x0,y0,w,h});
+  chartRegistry.set(id,{values:vals,secondaryValues:vals2,secondaryName:secondary,min,max,unit:cfg.unit,metric,x0,y0,w,h,selectedIndex:previousChartSelection.get(state.page+':'+state.range+':'+metric+':'+(secondary||''))});
   const d1=curve(vals,x0,y0,w,h,min,max), d2=vals2&&vals2.length>=2?curve(vals2,x0,y0,w,h,min,max):null;
   const color=cfg.color==='accent'?'var(--accent)':cfg.color==='blue'?'var(--blue)':cfg.color==='orange'?'var(--orange)':'var(--violet)';
   const gradId=`fade${id}`;
-  return `<div class="chart-holder ${opts.tall?'tall':''} ${opts.compact?'compact':''}" data-chart="${id}" tabindex="0" role="group" aria-label="Gráfico ${esc(metric)} para ${state.range}. Use as setas para inspecionar os pontos.">
+  return `<div class="history-region" data-history-region="${esc(metric)}" aria-busy="${pending}">${statusLabel}<div class="chart-holder ${opts.tall?'tall':''} ${opts.compact?'compact':''}" data-chart="${id}" tabindex="0" role="group" aria-label="Gráfico ${esc(metric)} para ${state.range}. Use as setas para inspecionar os pontos.">
     <svg viewBox="0 0 ${wid} ${hei}" preserveAspectRatio="none" role="img" aria-label="Série temporal ${esc(metric)}">
       <defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${color}" stop-opacity=".18"/><stop offset="100%" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
       ${[0,.25,.5,.75,1].map(f=>`<line x1="${x0}" x2="${x0+w}" y1="${y0+h*(1-f)}" y2="${y0+h*(1-f)}" stroke="var(--border)" stroke-dasharray="3 6" stroke-width="1"/><text x="${x0-9}" y="${y0+h*(1-f)+3}" text-anchor="end" fill="var(--muted)" font-size="10">${num(min+(max-min)*f,max<1?2:max<10?1:0)}</text>`).join('')}
@@ -86,7 +128,7 @@ function chart(metric,opts={}){
       <rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="transparent" />
     </svg>
     <div class="axis-foot"><span>${labelTime(vals[0].time)}</span><span>${labelTime(vals[Math.floor(vals.length*.33)].time)}</span><span>${labelTime(vals[Math.floor(vals.length*.66)].time)}</span><span>${labelTime(vals[vals.length-1].time)}</span></div>
-  </div>`;
+  </div></div>`;
 }
 function labelTime(ts){let opt=state.range==='1a'?{month:'short',year:'2-digit'}:['7d','30d'].includes(state.range)?{day:'2-digit',month:'short'}:{hour:'2-digit',minute:'2-digit'};return new Date(ts).toLocaleString('pt-BR',opt)}
 function card(content,cols='span-6',extra=''){return `<section class="card ${cols} ${extra}">${content}</section>`}
@@ -140,14 +182,170 @@ function renderSettings(){const s=state.snapshot,d=s.diagnostics||{};return `${h
 function diagnostics(){const d=state.snapshot.diagnostics||{};return `<div class="cards-grid">${card(`<div class="card-pad">${cardTitle('Tempo da coleta','Duração medida no servidor')}${row('Amostragem do hardware',d.samplingMs,'ms')}${row('Gravação anterior do hardware',d.historyWriteMs,'ms')}${row('Leitura indexada do SQLite',d.sqliteReadMs,'ms')}${row('Coleta do router',d.routerCollectionMs,'ms')}</div>`,'span-6')}${d.apiSamples>0?card(`<div class="card-pad">${cardTitle('Resposta das APIs','Últimas '+num(d.apiSamples)+' requisições · sem trânsito pela rede')}${row('Tempo médio',d.apiMeanMs,'ms')}${row('Percentil 95',d.apiP95Ms,'ms')}${(d.slowRoutes||[]).map(r=>row(r.path,r.ms,'ms')).join('')}</div>`,'span-6'):''}</div>`;}
 const pageFunctions={overview:renderOverview,performance:renderPerformance,network:renderNetwork,storage:renderStorage,battery:renderBattery,services:renderServices,activity:renderActivity,settings:renderSettings};
 function detailedErrorBanner(){const d=state.snapshot.diagnostics||{};return d.historyError?'<div class="callout warning" role="alert"><strong>Falha ao gravar o histórico no cartão: '+esc(d.historyError)+'</strong></div>':d.lowStorage?.length?'<div class="callout warning" role="alert">Pouco espaço disponível: '+esc(d.lowStorage.join(', '))+'.</div>':'';}
-function render(){const focused=document.activeElement,focusId=['metric-search','metric-group'].includes(focused?.id)?focused.id:null,selection=focusId==='metric-search'?[focused.selectionStart,focused.selectionEnd]:null;$('#tooltip').hidden=true;const main=$('#main-content'),opened=Array.from(main.querySelectorAll?.('details[open][data-source],details.source-section[open]')||[]).map(el=>el.dataset.source||'section');const entering=state.lastPage!==state.page;if(entering)state.enteredAt=Date.now();state.lastPage=state.page;document.body.dataset.motion=state.motion?'on':'off';main.classList?.remove('page-enter');chartRegistry.clear();chartID=0;setNav();$('#breadcrumb-current').textContent=nav.find(n=>n[0]===state.page)?.[1]||'Visão geral';const connected=state.mode==='real',demo=state.mode==='demo';const label=demo?'DEMONSTRAÇÃO':connected?'API LOCAL':state.snapshot.timestamp?'LEITURA ANTIGA':'SEM CONEXÃO';const note=demo?'Dados fictícios selecionados explicitamente.':connected?`Coleta no celular · ${dateTime(state.snapshot.timestamp)}`:state.snapshot.timestamp?`Última leitura: ${dateTime(state.snapshot.timestamp)}. Dados abaixo estão desatualizados.`:'Aguardando a primeira medição real. Sensores indisponíveis permanecem sem dados.';$('#main-content').innerHTML=`<div class="freshness-bar ${connected?'':'is-stale'}" role="status"><span class="freshness-dot"></span><strong>${connected?'Conectado ao S7':label}</strong><span>${state.snapshot.timestamp?'Amostra de '+esc(prettyTime(state.snapshot.timestamp)):'Conectando ao servidor…'}</span><button class="link-button" data-refresh>Atualizar ${ic('refresh')}</button></div>${detailedErrorBanner()}`+pageFunctions[state.page]();
-if(focusId){const field=$('#'+focusId);field?.focus({preventScroll:true});if(selection&&field?.setSelectionRange)field.setSelectionRange(...selection);}
-if(state.motion&&(entering||Date.now()-(state.enteredAt||0)<700))main.classList?.add('page-enter');for(const el of Array.from(main.querySelectorAll?.('details[data-source],details.source-section')||[])){if(opened.includes(el.dataset.source||'section'))el.open=true;}$('#mode-chip').className='mode-chip '+(connected?'real':'demo');$('#mode-chip').innerHTML=`<span></span> ${label}`;$('#sidebar-status').textContent=label;$('#sidebar-status-note').textContent=note;$('#footer-update').textContent=state.snapshot.timestamp?`Amostra: ${dateTime(state.snapshot.timestamp)}`:'Sem amostra';$('#clock-label').textContent=prettyTime(new Date());}
-function route(key){if(!pageFunctions[key])return;state.page=key;state.search='';state.filter='all';$('#sidebar').classList.remove('open');$('#sidebar-scrim').classList.remove('visible');render();if(state.mode!=='demo'){loadHistory().then(render).catch(()=>{});}window.scrollTo({top:0,behavior:state.motion&&!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches?'smooth':'auto'});$('#main-content').focus({preventScroll:true})}
-async function fetchJson(url,timeout=4000){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeout);try{const r=await fetch(url,{signal:controller.signal,cache:'no-store',credentials:'same-origin'});if(!r.ok)throw Error('HTTP '+r.status);return await r.json()}finally{clearTimeout(timer)}}
+// Reconcile existing nodes on the same screen instead of destroying controls and SVGs.
+// A detached template is only used to calculate the next structure. Expanded details,
+// focused controls and chart elements keep their identity unless their type changes.
+function patchNode(oldNode,newNode){
+ if(oldNode.isEqualNode?.(newNode))return;
+ if(oldNode.nodeType!==newNode.nodeType||oldNode.nodeName!==newNode.nodeName){oldNode.replaceWith(newNode.cloneNode(true));return;}
+ if(oldNode.nodeType===3||oldNode.nodeType===8){if(oldNode.nodeValue!==newNode.nodeValue)oldNode.nodeValue=newNode.nodeValue;return;}
+ if(oldNode.nodeType!==1)return;
+ const keepOpen=oldNode.tagName==='DETAILS'&&oldNode.open;
+ for(const attr of Array.from(oldNode.attributes)){
+   if(keepOpen&&attr.name==='open')continue;
+   if(!newNode.hasAttribute(attr.name))oldNode.removeAttribute(attr.name);
+ }
+ for(const attr of Array.from(newNode.attributes)){
+   if(attr.name==='open'&&oldNode.tagName==='DETAILS')continue;
+   if(oldNode.getAttribute(attr.name)!==attr.value)oldNode.setAttribute(attr.name,attr.value);
+ }
+ if(oldNode.matches?.('input,textarea,select')&&oldNode===document.activeElement){
+   // Never overwrite live keyboard input when polling.
+   return;
+ }
+ const before=Array.from(oldNode.childNodes),after=Array.from(newNode.childNodes);
+ for(let i=0;i<after.length;i++){
+   if(before[i])patchNode(before[i],after[i]);
+   else oldNode.appendChild(after[i].cloneNode(true));
+ }
+ for(let i=after.length;i<before.length;i++)before[i].remove();
+}
+function updateMain(main,html,entering){
+ if(entering||!document.createElement){main.innerHTML=html;return;}
+ const template=document.createElement('template');template.innerHTML=html;
+ const from=Array.from(main.childNodes),to=Array.from(template.content.childNodes);
+ for(let i=0;i<to.length;i++){if(from[i])patchNode(from[i],to[i]);else main.appendChild(to[i].cloneNode(true));}
+ for(let i=to.length;i<from.length;i++)from[i].remove();
+}
+function updateChrome(){
+ const connected=state.mode==='real',demo=state.mode==='demo';
+ const label=demo?'DEMONSTRAÇÃO':connected?'API LOCAL':state.snapshot.timestamp?'LEITURA ANTIGA':'SEM CONEXÃO';
+ const note=demo?'Dados fictícios selecionados explicitamente.':connected?`Coleta no celular · ${dateTime(state.snapshot.timestamp)}`:state.snapshot.timestamp?`Última leitura: ${dateTime(state.snapshot.timestamp)}. Dados abaixo estão desatualizados.`:'Aguardando a primeira medição real. Sensores indisponíveis permanecem sem dados.';
+ $('#mode-chip').className='mode-chip '+(connected?'real':'demo');
+ $('#mode-chip').innerHTML=`<span></span> ${label}`;
+ $('#sidebar-status').textContent=label;$('#sidebar-status-note').textContent=note;
+ $('#footer-update').textContent=state.snapshot.timestamp?`Amostra: ${dateTime(state.snapshot.timestamp)}`:'Sem amostra';
+ $('#breadcrumb-current').textContent=nav.find(n=>n[0]===state.page)?.[1]||'Visão geral';
+ const bar=$('#main-content').querySelector?.('.freshness-bar');
+ if(bar){
+   bar.classList.toggle('is-stale',!connected);
+   const strong=bar.querySelector('strong'),timestamp=bar.querySelector('span:nth-of-type(2)');
+   if(strong)strong.textContent=connected?'Conectado ao S7':label;
+   if(timestamp)timestamp.textContent=state.snapshot.timestamp?'Amostra de '+prettyTime(state.snapshot.timestamp):'Conectando ao servidor…';
+   const refresh=bar.querySelector('[data-refresh]');
+   if(refresh){refresh.disabled=state.fetching;refresh.setAttribute('aria-busy',String(state.fetching));}
+ }
+}
+function render(){
+ const main=$('#main-content'),entering=state.lastPage!==state.page;
+ const oldSelections=new Map();
+ for(const entry of chartRegistry.values())if(entry.selectedIndex!=null)
+   oldSelections.set((state.lastPage||state.page)+':'+state.range+':'+entry.metric+':'+(entry.secondaryName||''),entry.selectedIndex);
+ previousChartSelection=oldSelections;
+ const focused=document.activeElement,selection=focused?.id==='metric-search'?[focused.selectionStart,focused.selectionEnd]:null;
+ const opened=Array.from(main.querySelectorAll?.('details[open][data-source],details.source-section[open]')||[]).map(el=>el.dataset.source||'section');
+ state.lastPage=state.page;document.body.dataset.motion=state.motion?'on':'off';
+ main.classList?.remove('page-enter');chartRegistry.clear();chartID=0;
+ if(entering)setNav();
+ const connected=state.mode==='real',demo=state.mode==='demo';
+ const label=demo?'DEMONSTRAÇÃO':connected?'API LOCAL':state.snapshot.timestamp?'LEITURA ANTIGA':'SEM CONEXÃO';
+ const html=`<div class="freshness-bar ${connected?'':'is-stale'}" role="status"><span class="freshness-dot"></span><strong>${connected?'Conectado ao S7':label}</strong><span>${state.snapshot.timestamp?'Amostra de '+esc(prettyTime(state.snapshot.timestamp)):'Conectando ao servidor…'}</span><button type="button" class="link-button" data-refresh ${state.fetching?'disabled aria-busy="true"':'aria-busy="false"'}>Atualizar ${ic('refresh')}</button></div>${detailedErrorBanner()}`+pageFunctions[state.page]();
+ updateMain(main,html,entering);
+ if(entering&&state.motion&&!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches)main.classList?.add('page-enter');
+ if(entering)for(const el of Array.from(main.querySelectorAll?.('details[data-source],details.source-section')||[]))if(opened.includes(el.dataset.source||'section'))el.open=true;
+ if(!entering&&selection&&focused?.isConnected&&focused.setSelectionRange)focused.setSelectionRange(...selection);
+ updateChrome();
+ for(const [id,entry] of chartRegistry)if(entry.selectedIndex!=null){
+   const holder=main.querySelector?.('[data-chart="'+id+'"]');
+   if(holder)inspectChart(holder,undefined,undefined,entry.selectedIndex);
+ }
+}
+function route(key){
+ if(!pageFunctions[key])return;
+ if(state.page!==key){historyGeneration++;state.page=key;}
+ state.search='';state.filter='all';
+ $('#sidebar').classList.remove('open');$('#sidebar-scrim').classList.remove('visible');
+ cancelUnusedHistory();
+ const pending=state.mode!=='demo'?loadHistory():null;
+ render();if(pending)pending.catch(()=>{});
+ window.scrollTo?.({top:0,behavior:state.motion&&!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches?'smooth':'auto'});
+ $('#main-content').focus({preventScroll:true});
+}
+async function fetchJson(url,timeout=4000,externalSignal){
+ const controller=new AbortController();
+ const relay=()=>controller.abort();
+ if(externalSignal){if(externalSignal.aborted)controller.abort();else externalSignal.addEventListener('abort',relay,{once:true});}
+ const timer=setTimeout(()=>controller.abort(),timeout);
+ try{const r=await fetch(url,{signal:controller.signal,cache:'no-store',credentials:'same-origin'});
+   if(!r.ok)throw Error('HTTP '+r.status);return await r.json();
+ }finally{clearTimeout(timer);externalSignal?.removeEventListener('abort',relay);}
+}
 function validSnapshot(s){return !!(s&&s.timestamp&&Number.isFinite(Date.parse(s.timestamp))&&s.device&&s.cpu&&Array.isArray(s.cpu.coresPercent)&&s.memory&&s.battery&&s.network&&Array.isArray(s.storage)&&Array.isArray(s.services)&&Array.isArray(s.events));}
-async function checkAPI(showMessage=false){if(state.fetching)return;if(state.pref==='demo'){state.mode='demo';state.snapshot=Demo.demoSnapshot(state.tick);state.history={};render();return;}state.fetching=true;try{const result=await fetchJson('/api/host/snapshot',8000);if(!validSnapshot(result))throw Error('Aguardando amostra');if(!state.snapshot.timestamp)state.lastPage=null;state.snapshot=result;state.mode=result.quality==='stale'||Date.now()-Date.parse(result.timestamp)>180000||Date.parse(result.timestamp)-Date.now()>5000?'offline':'real';render();await loadHistory();if(showMessage)toast('Leitura recebida da API local.');}catch(err){if(state.mode==='demo'){state.snapshot=emptySnapshot();state.history={};}state.mode='offline';if(showMessage)toast('API indisponível; nenhuma simulação ativada.');}finally{state.fetching=false;render()}}
-async function loadHistory(){if(state.mode==='demo')return;const required={overview:['cpu','memory','rx','tx'],performance:['cpu','memory'],network:['rx','tx'],storage:['storage'],battery:['battery','temp']}[state.page]||[];const range=state.range;await Promise.all(required.map(async metric=>{const key=`${metric}:${range}`;if(Date.now()-(state.historyTimes[key]||0)<60000)return;try{const result=await fetchJson(`/api/host/history?metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`,8000);if(!Array.isArray(result)||!result.every(p=>(p.value===null||typeof p.value==='number'&&Number.isFinite(p.value))&&Number.isFinite(new Date(p.time).getTime())))throw Error('Série inválida');state.history[key]=result.map(p=>({time:new Date(p.time).getTime(),value:p.value}));state.historyTimes[key]=Date.now();}catch{/* Preserve previous history during temporary failures. */}}))}
+async function checkAPI(showMessage=false){
+ if(state.fetching||state.paused||document.hidden)return;
+ if(state.pref==='demo'){
+   if(!Demo){if(showMessage)toast('Dados de demonstração indisponíveis.');return;}
+   cancelAllHistory();state.mode='demo';state.snapshot=Demo.demoSnapshot(state.tick);state.history={};state.historyTimes={};state.historyStatus={};render();return;
+ }
+ state.fetching=true;updateChrome();
+ try{
+   const result=await fetchJson('/api/host/snapshot',8000);
+   if(!validSnapshot(result))throw Error('Aguardando amostra');
+   if(!state.snapshot.timestamp)state.lastPage=null;
+   const nextMode=result.quality==='stale'||Date.now()-Date.parse(result.timestamp)>180000||Date.parse(result.timestamp)-Date.now()>5000?'offline':'real';
+   const snapshotChanged=JSON.stringify(state.snapshot)!==JSON.stringify(result)||state.mode!==nextMode;
+   state.snapshot=result;state.mode=nextMode;
+   if(snapshotChanged)render();else updateChrome();
+   await loadHistory();
+   if(showMessage)toast('Leitura recebida da API local.');
+ }catch(err){
+   if(state.mode==='demo'){state.snapshot=emptySnapshot();state.history={};state.historyStatus={};}
+   const changed=state.mode!=='offline';state.mode='offline';
+   if(changed)render();else updateChrome();
+   if(showMessage)toast('API indisponível; nenhuma simulação ativada.');
+ }finally{state.fetching=false;updateChrome();}
+}
+function cancelAllHistory(){
+ for(const [,flight] of historyFlights)flight.controller.abort();
+ historyFlights.clear();
+ for(const [key,meta] of Object.entries(state.historyStatus))if(meta.phase==='loading'){
+   if(Array.isArray(state.history[key]))state.historyStatus[key]={phase:'stale'};
+   else delete state.historyStatus[key];
+ }
+}
+function requestHistory(metric,range,{force=false}={}){
+ const key=metric+':'+range,time=Date.now();
+ if(historyFlights.has(key))return historyFlights.get(key).promise;
+ if(!force&&time-(state.historyTimes[key]||0)<HISTORY_TTL_MS)return Promise.resolve(false);
+ const controller=new AbortController();
+ state.historyStatus[key]={phase:'loading',startedAt:time};
+ const request=(async()=>{
+   try{
+     const result=await fetchJson('/api/host/history?metric='+encodeURIComponent(metric)+'&range='+encodeURIComponent(range),8000,controller.signal);
+     if(controller.signal.aborted)return false;
+     if(!Array.isArray(result)||!result.every(p=>(p.value===null||typeof p.value==='number'&&Number.isFinite(p.value))&&Number.isFinite(new Date(p.time).getTime())))throw Error('Série inválida');
+     const series=result.map(p=>({time:new Date(p.time).getTime(),value:p.value}));
+     cacheHistory(key,series);
+     state.historyStatus[key]={phase:series.length?'success':'empty',updatedAt:Date.now()};
+     if(currentHistoryKeys().has(key)){historyAnnouncement('Histórico de '+metric+' em '+range+' atualizado.');scheduleRender();}
+     return true;
+   }catch(err){
+     if(controller.signal.aborted)return false;
+     state.historyStatus[key]={phase:Array.isArray(state.history[key])?'stale':'error',error:String(err.message||err),updatedAt:Date.now()};
+     if(currentHistoryKeys().has(key)){historyAnnouncement('Falha ao atualizar histórico de '+metric+' em '+range+'.');scheduleRender();}
+     return false;
+   }finally{if(historyFlights.get(key)?.controller===controller)historyFlights.delete(key);}
+ })();
+ historyFlights.set(key,{promise:request,controller});
+ return request;
+}
+async function loadHistory(opts={}){
+ if(state.mode==='demo'||state.paused||document.hidden)return false;
+ const metrics=requiredHistory[state.page]||[],range=state.range;
+ if(!metrics.length)return false;
+ const jobs=metrics.map(metric=>requestHistory(metric,range,opts));
+ return Promise.all(jobs);
+}
 function csvEscape(v){return '"'+String(v??'').replace(/"/g,'""')+'"'}
 function saveBlob(filename,mime,data){const blob=new Blob([data],{type:mime}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500)}
 function exportData(type){const snap=state.snapshot,name=`s7-${type}-${new Date().toISOString().slice(0,10)}`;if(type==='events'){const lines=[['tipo','titulo','detalhe','minutos_relativos'].map(csvEscape).join(',')].concat((snap.events||[]).map(e=>[e.type,e.title,e.detail,e.at].map(csvEscape).join(',')));saveBlob(name+'.csv','text/csv;charset=utf-8','\ufeff'+lines.join('\n'));return}const payload={NOTICE:state.mode==='demo'?'DADOS FICTÍCIOS. NÃO SÃO MEDIÇÕES DO APARELHO.':state.mode==='offline'?'API indisponível; última amostra ou campos sem dados.':'Dados fornecidos pela API local.',source:state.mode,exportedAt:new Date().toISOString(),type,data:type==='snapshot'?snap:type==='network'?snap.network:type==='storage'?snap.storage:snap.services};saveBlob(name+'.json','application/json;charset=utf-8',JSON.stringify(payload,null,2));toast('Exportação gerada no navegador.')}
@@ -155,13 +353,14 @@ function copyString(str){navigator.clipboard?.writeText(str).then(()=>toast('Com
 $('#main-content').addEventListener('click',async e=>{
  const t=e.target.closest('button');if(!t)return;
  if(t.dataset.nav)route(t.dataset.nav);
- else if(t.dataset.range){state.range=t.dataset.range;saveSetting('range',state.range);if(state.mode!=='demo')await loadHistory();render()}
- else if('refresh' in t.dataset)await checkAPI(true);
+ else if(t.dataset.range){if(state.range===t.dataset.range)return;historyGeneration++;state.range=t.dataset.range;saveSetting('range',state.range);cancelUnusedHistory();const pending=loadHistory();render();await pending}
+ else if('retryHistory' in t.dataset){const metric=t.dataset.retryHistory;if(!(requiredHistory[state.page]||[]).includes(metric))return;const pending=requestHistory(metric,state.range,{force:true});render();await pending}
+  else if('refresh' in t.dataset)await checkAPI(true);
  else if(t.dataset.export)exportData(t.dataset.export);
  else if('motion' in t.dataset){state.motion=!state.motion;saveSetting('motion',state.motion?'on':'off');render()}
  else if('clearSearch' in t.dataset){state.search='';state.filter='all';render()}
  else if(t.dataset.filter){state.filter=t.dataset.filter;render()}
- else if('pause' in t.dataset){state.paused=!state.paused;render();toast(state.paused?'Atualização visual pausada.':'Atualização visual retomada.')}
+ else if('pause' in t.dataset){state.paused=!state.paused;if(state.paused)cancelAllHistory();else{const pending=loadHistory();pending.catch(()=>{});}render();toast(state.paused?'Atualização visual pausada.':'Atualização visual retomada.')}
  else if('themeSwitch' in t.dataset){setTheme(state.theme==='dark'?'light':'dark');render()}
  else if('copyCommand' in t.dataset)copyString('cd ~/s7-server/app/dashboard\npython -m http.server 9090 --bind 0.0.0.0');
 });
@@ -183,6 +382,6 @@ function updateClock(){$('#clock-label').textContent=prettyTime(new Date())}
 setTheme(state.theme);render();updateClock();setInterval(()=>{if(!document.hidden)updateClock()},1000);
 setInterval(()=>{if(state.paused||state.mode!=='demo')return;state.tick++;state.snapshot=Demo.demoSnapshot(state.tick);if(document.activeElement?.id==='event-search')return;render()},4000);
 setInterval(()=>{if(state.paused||state.pref==='demo'||document.hidden)return;checkAPI(false)},30000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!state.paused)checkAPI(false)});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelAllHistory();else if(!state.paused)checkAPI(false)});
 checkAPI(false);
 })();
