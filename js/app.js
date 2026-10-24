@@ -55,8 +55,12 @@ let lastRenderedRange=state.range;
 function scheduleRender(){
  if(renderQueued)return;
  renderQueued=true;
- const raf=typeof requestAnimationFrame==='function'?requestAnimationFrame:fn=>setTimeout(fn,0);
- raf(()=>{renderQueued=false;if(!document.hidden)render()});
+ // rAF batches writes in visible tabs; timeout fallback handles throttled/headless frames.
+ let flushed=false;
+ const flush=()=>{if(flushed)return;flushed=true;renderQueued=false;if(!document.hidden)render()};
+ if(typeof requestAnimationFrame==='function')requestAnimationFrame(flush);
+ else setTimeout(flush,0);
+ setTimeout(flush,80);
 }
 function historyAnnouncement(message){const el=$('#history-announcement');if(el)el.textContent=message;}
 function cacheHistory(key,values){
