@@ -59,6 +59,10 @@
    assert(d.querySelectorAll('#explorer-results .source-card').length===96,'Load more did not append 48');
    checks.push('48-item explorer pages');
    out.dataset.status='pass';out.textContent=checks.join(' | ');
- }catch(err){out.dataset.status='fail';out.textContent=String(err.message||err);console.error(err);}
+ }catch(err){const d=frame.contentDocument,root=d?.querySelector('[data-history-region="cpu"]');
+   out.dataset.status='fail';
+   out.textContent=String(err.message||err)+' | view='+(d?.querySelector('.freshness-bar strong')?.textContent||'none')+' | cpu='+(root?.getAttribute('aria-busy')||'none')+' | html='+(root?.innerHTML.slice(0,110).replace(/[<>]/g,' ')||'none');
+   console.error(err);
+ }
 })();
 </script></body></html>
