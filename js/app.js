@@ -342,7 +342,7 @@ function requestHistory(metric,range,{force=false}={}){
  state.historyStatus[key]={phase:'loading',startedAt:time};
  const request=(async()=>{
    try{
-     const result=await fetchJson('/api/host/history?metric='+encodeURIComponent(metric)+'&range='+encodeURIComponent(range),8000,controller.signal);
+     const result=await fetchJson('/api/host/history?metric='+encodeURIComponent(metric)+'&range='+encodeURIComponent(range),15000,controller.signal);
      if(controller.signal.aborted)return false;
      if(!Array.isArray(result)||!result.every(p=>(p.value===null||typeof p.value==='number'&&Number.isFinite(p.value))&&Number.isFinite(new Date(p.time).getTime())))throw Error('Série inválida');
      const series=result.map(p=>({time:new Date(p.time).getTime(),value:p.value}));
