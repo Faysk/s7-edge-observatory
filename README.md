@@ -24,7 +24,7 @@ Os arquivos Workspace/finish estão incluídos para preview independente; os lin
 - **DOM:** snapshots idênticos evitam reconstrução. Para alterações na mesma tela, a interface reconcilia os nós existentes, preservando gráficos SVG, foco e expansões sempre que possível. O explorador mostra **48 leituras por vez**, com botão de carregar mais.
 - **Acessibilidade:** indicadores com `aria-busy`, estado por gráfico, região viva para conclusão/erro e suporte a movimento reduzido. Nenhum contador sem leitura vira artificialmente zero.
 
-O painel **não altera o processo de coleta**, cadência de polling de 30 s nem localização do banco; tudo isso continua sob responsabilidade do backend. O código é para revisão, não representa deploy no telefone. Consulte [matriz de aceite](docs/QA_ACCEPTANCE.md) para os testes sintéticos e pendências da homologação.
+O painel **não altera o processo de coleta**, cadência de polling de 30 s nem localização do banco; tudo isso continua sob responsabilidade do backend. A implementação foi publicada no telefone com autorização em 25/10/2026, preservando os dados privados. Consulte [matriz de aceite](docs/QA_ACCEPTANCE.md) para os testes sintéticos e pendências da homologação.
 
 ## Validação
 

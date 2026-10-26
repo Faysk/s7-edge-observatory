@@ -47,3 +47,12 @@ Os dados de `js/data.js` e dos testes são inteiramente sintéticos; o navegador
 ## Limitações
 
 O teste usa fixtures e métricas artificiais. Uma execução rápida no Node **não mede INP, FPS nem LCP**. O browser headless não reproduz CPU, microSD ou WebView/Chromium do aparelho físico. Não declarar as metas de produção como atingidas até confirmar no ambiente autorizado.
+
+
+## Atualização de homologação autorizada — 26/10/2026
+
+A implementação desta PR foi integrada aos arquivos privados e publicada no S7 em 25/10, com hashes do código conferidos; a verificação em 26/10 confirmou o mesmo código e HTTP 200. Dados, índices e documentos privados foram preservados e não estão no Git. Testes Node e fixtures no navegador integrado foram aprovados; delays/500/cancelamento foram exercitados em fixtures sintéticas, sem interromper fontes reais. Nenhum cache interno novo.
+
+Lote LAN de quatro séries 7d observado em 1,36 s (repetição 0,77 s), após o backend calcular todas as métricas da mesma janela em uma leitura. Snapshot válido, CPU disponível e sem erro de gravação. Regressões cobrem zero/null, estados loading/empty/error/stale, última intenção, requisições compartilhadas, SVG/foco/expansões e paginação48.
+
+Esses resultados validam a entrega funcional LAN e a redução de trabalho/bytes. Traces de INP/LCP/FPS no navegador executando fisicamente no Android e auditoria com leitor de tela não foram produzidos; não registrar metas universais como aprovadas. A primeira leitura completa sem cache no microSD ainda pode levar vários segundos. Medições HTTP e viewport móvel desktop não substituem o cliente físico.
