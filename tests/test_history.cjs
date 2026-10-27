@@ -152,5 +152,16 @@ const onlyHistory=()=>calls.filter(x=>x.url.includes('/history?'));
   const t0=performance.now(),html=t.explorerResults();
   assert.equal((html.match(/class="source-card"/g)||[]).length,48);
   console.log('1000 synthetic readings: JS '+(performance.now()-t0).toFixed(1)+'ms, first page 48 cards');
+  // Real negative battery temperature is not zero, missing, or clipped to 0°C.
+  t.state.mode='real';t.state.range='24h';
+  const now=Date.now();
+  t.state.history['temp:24h']=[{time:now-60000,value:-7},
+                                {time:now,value:-1}];
+  const temperatureSvg=t.chart('temp');
+  const ticks=[...temperatureSvg.matchAll(/text-anchor="end"[^>]*>([^<]+)<\/text>/g)]
+    .map(hit=>Number.parseFloat(hit[1].replace(',','.')));
+  assert(ticks.some(tick=>tick<0),'Negative battery Celsius must appear on chart axis');
+  console.log('Negative battery temperatures remain within visible chart domain');
+
   console.log('S7 history/polling synthetic regressions passed');
 })().catch(err=>{console.error(err);process.exitCode=1;});
