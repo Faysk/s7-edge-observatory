@@ -158,7 +158,7 @@ const onlyHistory=()=>calls.filter(x=>x.url.includes('/history?'));
   t.state.history['temp:24h']=[{time:now-60000,value:-7},
                                 {time:now,value:-1}];
   const temperatureSvg=t.chart('temp');
-  const ticks=[...temperatureSvg.matchAll(/text-anchor="end"[^>]*>([^<]+)<\\/text>/g)]
+  const ticks=[...temperatureSvg.matchAll(/text-anchor="end"[^>]*>([^<]+)<\/text>/g)]
     .map(hit=>Number.parseFloat(hit[1].replace(',','.')));
   assert(ticks.some(tick=>tick<0),'Negative battery Celsius must appear on chart axis');
   console.log('Negative battery temperatures remain within visible chart domain');
